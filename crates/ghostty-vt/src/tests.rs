@@ -293,3 +293,27 @@ fn after_a_reflow_the_history_says_dropped_exactly_when_its_first_line_is_gone()
     }
     assert_eq!(t.history_dropped(), Some(true), "lines ten rows high fill it sooner");
 }
+
+#[test]
+fn styled_lines_are_the_plain_lines_with_their_colors() {
+    let mut t = Terminal::new(20, 5, 1 << 20);
+    t.write(b"plain\r\n\x1b[31mred\x1b[0m and \x1b[1;38;5;208mbold208\r\nstill\x1b[0m\r\n");
+    t.write(
+        b"\x1b[38;2;1;2;3mtrue\x1b[48;5;4m  \x1b[0m\r\n0123456789012345678901234\r\n\x1b[44m   \x1b[0m\r\n\x1b[92mend",
+    );
+    assert_eq!(
+        t.styled_text(),
+        "plain\n\x1b[31mred\x1b[0m and \x1b[1;38;5;208mbold208\x1b[0m\n\x1b[1;38;5;208mstill\x1b[0m\n\
+         \x1b[38;2;1;2;3mtrue\x1b[44m  \x1b[0m\n0123456789012345678901234\n\x1b[44m   \x1b[0m\n\x1b[92mend\x1b[0m"
+    );
+    let plain = t.plain_text();
+    let styled = t.styled_text();
+    for (p, s) in plain.lines().zip(styled.lines()) {
+        assert_eq!(sgr::strip(s).trim_end(), p);
+    }
+    assert_eq!(plain.lines().count(), styled.lines().count());
+    t.write(b"\r\n\x1b[1mrow\x1b[0m");
+    let rows = t.styled_screen_rows();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[4], "\x1b[1;92mrow\x1b[0m", "the program's pen was still green");
+}

@@ -458,6 +458,7 @@ Arguments:
 Options:
       --json           JSON output even in a terminal
       --lines <LINES>  Lines of history above the screen [default: 0]
+      --ansi           With colors and styles: the same lines with SGR sequences (`ansi`)
   -h, --help           Print help
 ```
 

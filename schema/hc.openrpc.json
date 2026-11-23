@@ -620,6 +620,13 @@
       },
       "ReadResult": {
         "properties": {
+          "ansi": {
+            "description": "Only with `ansi`: `text`'s lines with their colors and styles, one for\none. Each line starts in the default style and ends with ESC[0m if it\nset one; SGR (ESC[...m) is the only escape sequence. Without SGR a line\nis the text line, plus any trailing spaces that have a background color.\nA full-screen app's stitched history comes without them.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "complete": {
             "description": "False when part of what was asked for may be missing.",
             "type": "boolean"
@@ -2191,6 +2198,16 @@
       "name": "terminal.read",
       "paramStructure": "by-name",
       "params": [
+        {
+          "description": "With colors and styles: the same lines with SGR sequences (`ansi`).",
+          "name": "ansi",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "With colors and styles: the same lines with SGR sequences (`ansi`).",
+            "type": "boolean"
+          }
+        },
         {
           "name": "caller",
           "required": false,

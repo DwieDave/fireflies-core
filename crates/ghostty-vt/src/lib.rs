@@ -3,6 +3,8 @@
 use std::ffi::c_void;
 use std::ptr;
 
+pub mod sgr;
+
 mod ffi {
     use std::ffi::c_void;
 
@@ -736,6 +738,22 @@ impl Terminal {
     /// The active screen and its scrollback as plain text, soft wraps joined.
     pub fn plain_text(&self) -> String {
         String::from_utf8_lossy(&self.format(ffi::FORMAT_PLAIN, None, false)).into_owned()
+    }
+
+    /// `plain_text`'s lines with their colors and styles: see [`sgr`]. Same
+    /// lines, though a trailing run of colored spaces (or rows of them) stays.
+    pub fn styled_text(&self) -> String {
+        let vt = String::from_utf8_lossy(&self.format_with(ffi::FORMAT_VT, None, false, true)).into_owned();
+        vt.split('\n').map(|l| sgr::tidy(l.strip_suffix('\r').unwrap_or(l))).collect::<Vec<_>>().join("\n")
+    }
+
+    /// `screen_rows` with their colors and styles (see [`sgr`]), not padded.
+    pub fn styled_screen_rows(&self) -> Vec<String> {
+        let (cols, rows) = self.size();
+        let last = (cols.saturating_sub(1), rows.saturating_sub(1) as u32);
+        let Some(sel) = self.select(ffi::POINT_ACTIVE, (0, 0), last) else { return Vec::new() };
+        let vt = String::from_utf8_lossy(&self.format_with(ffi::FORMAT_VT, Some(&sel), false, false)).into_owned();
+        vt.split('\n').take(rows as usize).map(|l| sgr::tidy(l.strip_suffix('\r').unwrap_or(l))).collect()
     }
 
     fn grid_ref(&self, tag: i32, x: u16, y: u32) -> Option<ffi::GridRef> {

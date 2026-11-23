@@ -151,6 +151,21 @@ fn a_read_missing_history_says_so_when_the_program_prints_no_newlines() {
 }
 
 #[test]
+fn read_ansi_gives_the_lines_with_their_colors() {
+    let s = Session::new();
+    let printf = "printf 'plain\\n\\033[31mred\\033[0m \\033[1;92mbold bright\\033[0m\\n\\033[38;5;208m256\\033[48;2;10;20;30mtrue\\033[0m\\n\\033[4mopen'";
+    let t = run(&s, &["sh", "-c", &format!("{printf}; sleep 100")]);
+    wait_text(&s, &t, "open");
+    let ansi = "plain\n\x1b[31mred\x1b[0m \x1b[1;92mbold bright\x1b[0m\n\x1b[38;5;208m256\x1b[48;2;10;20;30mtrue\x1b[0m\n\x1b[4mopen\x1b[0m";
+    let out = s.hc(&["read", "--ansi", &t]);
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{ansi}\n"), "text output, piped");
+    let r = s.json(&["read", "--ansi", "--lines", "10", &t]);
+    assert_eq!(r["ansi"], ansi, "and in JSON, beside the plain text");
+    assert_eq!(r["text"], "plain\nred bold bright\n256true\nopen");
+    assert!(s.json(&["read", &t]).get("ansi").is_none(), "only when asked");
+}
+
+#[test]
 fn read_prints_plain_text_even_when_piped() {
     let s = Session::new();
     let t = run(&s, &["sh", "-c", "echo 'say \"hi\"'; echo second; sleep 100"]);

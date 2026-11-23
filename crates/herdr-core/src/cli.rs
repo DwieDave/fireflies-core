@@ -469,7 +469,8 @@ fn run(cmd: Option<Cmd>, json: bool, asked: bool) -> Result<Option<Out>, RpcErro
             p.terminal = pick(p.terminal)?;
             p.caller = Some(caller());
             let r = call("terminal.read", to(&p))?;
-            let mut human = r["text"].as_str().unwrap_or_default().to_string();
+            let shown = if p.ansi { "ansi" } else { "text" };
+            let mut human = r[shown].as_str().unwrap_or_default().to_string();
             if r["why"] == "working" {
                 human.push_str("\n[hc] only its screen: it is working; read again once it stops for its history");
             } else if let Some(state @ ("blocked" | "error")) = r["why"].as_str() {

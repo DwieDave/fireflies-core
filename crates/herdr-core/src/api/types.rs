@@ -357,11 +357,22 @@ pub struct ReadParams {
     #[arg(long, default_value_t = 0)]
     #[serde(default)]
     pub lines: usize,
+    /// With colors and styles: the same lines with SGR sequences (`ansi`).
+    #[arg(long)]
+    #[serde(default)]
+    pub ansi: bool,
 }
 
 #[derive(Serialize, JsonSchema)]
 pub struct ReadResult {
     pub text: String,
+    /// Only with `ansi`: `text`'s lines with their colors and styles, one for
+    /// one. Each line starts in the default style and ends with ESC[0m if it
+    /// set one; SGR (ESC[...m) is the only escape sequence. Without SGR a line
+    /// is the text line, plus any trailing spaces that have a background color.
+    /// A full-screen app's stitched history comes without them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ansi: Option<String>,
     /// False when part of what was asked for may be missing.
     pub complete: bool,
     /// "screen", "history", or "stitched" (a full-screen app, read by scrolling it).

@@ -358,10 +358,17 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
     if full_screen && p.lines > 0 {
         let lines = p.lines.min(FINISHED_LINES);
         let result = match core.stitch(id, lines).await {
-            Some((text, complete)) => ReadResult { text, complete, how: "stitched".into(), why: None },
+            Some((text, complete)) => {
+                let ansi = p.ansi.then(|| text.clone());
+                ReadResult { text, ansi, complete, how: "stitched".into(), why: None }
+            }
             None => {
                 let st = core.lock();
                 let text = st.screens.get(&id).map(|s| crate::stitch::text(&s.screen_rows())).unwrap_or_default();
+                let ansi = p.ansi.then(|| {
+                    let rows = st.screens.get(&id).map(|s| s.styled_screen_rows()).unwrap_or_default();
+                    styled(&text.lines().collect::<Vec<_>>(), &rows).join("\n")
+                });
                 let why = st
                     .reg
                     .terminals
@@ -369,7 +376,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
                     .and_then(|t| t.status.as_ref())
                     .filter(|s| matches!(s.state.as_str(), "working" | "blocked" | "error"))
                     .map(|s| s.state.clone());
-                ReadResult { text, complete: false, how: "screen".into(), why }
+                ReadResult { text, ansi, complete: false, how: "screen".into(), why }
             }
         };
         core.flush_saved().await?;
@@ -386,6 +393,11 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
         let text = text.unwrap_or_default();
         let all: Vec<&str> = text.trim_end_matches('\n').lines().collect();
         let start = all.len().saturating_sub(rows + lines);
+        let ansi = p.ansi.then(|| {
+            let lines: Vec<String> =
+                core.screen_styled(&st, id).unwrap_or_default().split('\n').map(Into::into).collect();
+            styled(&all, &lines)[start..].join("\n")
+        });
         // Asked for more than is kept, and the history dropped rows at its
         // limit: some is gone. Printed lines tell only for a screen whose past
         // is not known (restored from an older core): output that scrolls
@@ -400,6 +412,7 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
         }
         ReadResult {
             text: all[start..].join("\n"),
+            ansi,
             complete,
             how: if p.lines == 0 { "screen" } else { "history" }.into(),
             why: None,
@@ -407,6 +420,16 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
     };
     core.flush_saved().await?;
     Ok(result)
+}
+
+/// `plain`'s lines with their colors, from `styled` lines in the same order.
+/// A line whose styled text differs (never expected) stays plain.
+fn styled(plain: &[&str], styled: &[String]) -> Vec<String> {
+    let line = |(i, p): (usize, &&str)| match styled.get(i) {
+        Some(s) if ghostty_vt::sgr::strip(s).trim_end() == p.trim_end() => s.clone(),
+        _ => p.to_string(),
+    };
+    plain.iter().enumerate().map(line).collect()
 }
 
 async fn terminal_attach(core: Ctx<'_>, p: AttachParams) -> Result<AttachResult, RpcError> {

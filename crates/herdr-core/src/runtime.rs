@@ -754,12 +754,21 @@ impl Core {
 
     /// The screen text of a live or finished terminal.
     pub fn screen_text(&self, st: &State, id: u32) -> Option<String> {
+        self.with_screen(st, id, Screen::plain_text)
+    }
+
+    /// `screen_text` with colors and styles (`read --ansi`).
+    pub fn screen_styled(&self, st: &State, id: u32) -> Option<String> {
+        self.with_screen(st, id, Screen::styled_text)
+    }
+
+    fn with_screen<T>(&self, st: &State, id: u32, f: impl Fn(&Screen) -> T) -> Option<T> {
         match st.screens.get(&id) {
-            Some(screen) => Some(screen.plain_text()),
+            Some(screen) => Some(f(screen)),
             None => std::fs::read(self.snapshot_path(id))
                 .ok()
                 .and_then(|bytes| Screen::restore(&bytes, self.history_bytes()))
-                .map(|s| s.plain_text()),
+                .map(|s| f(&s)),
         }
     }
 
