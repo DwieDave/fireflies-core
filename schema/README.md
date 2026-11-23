@@ -97,6 +97,9 @@ Size/paint pairs share stream ordering and wait for DATA credit; RESIZE itself
 does not consume credit. Intermediate unsent grids are coalesced, and a paint is
 serialized only when the observer has credit. The attach reply precedes stream
 frames, including on core-to-core relays and reconnects.
+Any viewer may pass `repaint_on_resize: true` for the same authoritative paint
+(no RESIZE frame) after every grid change: `hc attach` does, because its outer
+terminal may keep other rows than the core's when it shrinks. Older cores ignore it.
 Without this opt-in, existing event-driven observers keep their previous output
 behavior: no additional resize paints or RESIZE frames.
 

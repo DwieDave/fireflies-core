@@ -2352,6 +2352,16 @@
           }
         },
         {
+          "description": "A full repaint after every size change: the viewer's own terminal may\nkeep other rows than the core's when it shrinks (mosh keeps the top ones).",
+          "name": "repaint_on_resize",
+          "required": false,
+          "schema": {
+            "default": false,
+            "description": "A full repaint after every size change: the viewer's own terminal may\nkeep other rows than the core's when it shrinks (mosh keeps the top ones).",
+            "type": "boolean"
+          }
+        },
+        {
           "description": "Observer understands core-to-viewer RESIZE before replacement paints.",
           "name": "resize_notifications",
           "required": false,

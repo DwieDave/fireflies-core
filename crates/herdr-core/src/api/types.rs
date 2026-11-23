@@ -396,6 +396,11 @@ pub struct AttachParams {
     #[arg(skip)]
     #[serde(default)]
     pub resize_notifications: bool,
+    /// A full repaint after every size change: the viewer's own terminal may
+    /// keep other rows than the core's when it shrinks (mosh keeps the top ones).
+    #[arg(skip)]
+    #[serde(default)]
+    pub repaint_on_resize: bool,
     /// Scrollback lines to show first (main screen only).
     #[arg(long, default_value_t = 0)]
     #[serde(default)]

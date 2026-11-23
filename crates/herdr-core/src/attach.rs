@@ -208,7 +208,9 @@ pub fn run(paths: &Paths, terminal: &str, observe: bool, history: usize) -> Resu
 
     let (cols, rows) = window_size();
     let caller = crate::client::terminal_id();
-    let params = json!({"terminal": terminal, "observe": observe, "history": history, "cols": cols, "rows": rows, "display": facts, "caller": caller});
+    // The outer terminal may keep other rows than the core's when it shrinks (mosh keeps the top ones).
+    let params = json!({"terminal": terminal, "observe": observe, "history": history, "cols": cols, "rows": rows,
+        "display": facts, "caller": caller, "repaint_on_resize": true});
     let req = json!({"jsonrpc": "2.0", "id": 1, "method": "terminal.attach", "params": params});
     send(0, wire::DATA, req.to_string().as_bytes());
     let mut early_frames = Vec::new();

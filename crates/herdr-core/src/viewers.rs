@@ -33,6 +33,7 @@ pub struct Viewer {
     pub channel: u32,
     pub observe: bool,
     resize_notifications: bool,
+    repaint_on_resize: bool,
     repaint_pending: bool,
     size: (u16, u16),
     /// None: not active since it came back after a dropped line.
@@ -58,6 +59,7 @@ fn rgb(hex: &Option<String>) -> Option<Rgb> {
 pub struct AttachRequest {
     pub observe: bool,
     pub resize_notifications: bool,
+    pub repaint_on_resize: bool,
     pub history: usize,
     pub size: (u16, u16),
     pub display: Display,
@@ -85,6 +87,7 @@ impl Core {
             channel,
             observe: req.observe,
             resize_notifications: req.observe && req.resize_notifications,
+            repaint_on_resize: req.repaint_on_resize,
             repaint_pending: false,
             size: req.size,
             active_at: (!req.resumed).then(Instant::now),
@@ -348,9 +351,15 @@ impl Core {
             link.send(&proto::json_frame(proto::RESIZE, id, &proto::Size { cols, rows }));
         }
         let size = [cols.to_le_bytes(), rows.to_le_bytes()].concat();
-        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications) {
+        for v in st.viewers.get_mut(&id).into_iter().flatten().filter(|v| v.resize_notifications || v.repaint_on_resize)
+        {
             v.repaint_pending = true;
-            v.conn.with(|out| out.resize(v.channel, &size));
+            // Wakes the writer, which serializes the paint once the viewer has credit.
+            v.conn.with(|out| {
+                if v.resize_notifications {
+                    out.resize(v.channel, &size);
+                }
+            });
         }
         self.save_soon();
         self.emit(st, "size", id, serde_json::json!({"cols": cols, "rows": rows}));
