@@ -1,5 +1,19 @@
 # herdr-core (`hc`)
 
+> **fireflies-core** is the [Fireflies](https://github.com/DwieDave/fireflies) fork of
+> [herdr-core](https://github.com/herdrdev/herdr-core). It carries only what the
+> Fireflies apps (desktop and iOS) need from `hc read` before upstream has it:
+>
+> - `hc read --ansi`: the lines with their colors and styles (`ansi` beside `text` in JSON).
+> - `complete` from the history's dropped rows, not counted newlines: true after
+>   `clear`, false when output that scrolls without newlines filled the history.
+>
+> **Base:** upstream `v0.1.18` (the core Fireflies runs), on branch `fireflies`;
+> `master` and the tags stay upstream's. **Rebase policy:** when Fireflies moves to
+> a newer upstream release, rebase these commits onto that tag (`git rebase --onto
+> vX.Y.Z v0.1.18 fireflies`), run `cargo test`, and update the base named here.
+> Drop a commit once upstream ships the same behavior. Nothing else goes in here.
+
 `hc` runs programs and coding agents in terminals that stay alive after you leave.
 Agents can start other agents, send them work, and hear back; you can attach to any terminal and take over.
 
