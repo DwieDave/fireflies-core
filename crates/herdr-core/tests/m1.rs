@@ -118,6 +118,39 @@ fn a_read_missing_history_says_so() {
 }
 
 #[test]
+fn a_read_of_everything_since_a_clear_is_complete() {
+    // `clear` erases the history (CSI 3J): what was printed before it is gone
+    // on purpose, so a read that returns everything after it is complete.
+    let s = Session::new();
+    let t = run(&s, &["sh", "-c", "seq 1 50; printf '\\033[H\\033[2J\\033[3J'; seq -f 'hist-%04g' 1 1000; sleep 100"]);
+    wait_text(&s, &t, "hist-1000");
+    let r = s.json(&["read", &t, "--lines", "5000"]);
+    let text = r["text"].as_str().unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!((lines.first(), lines.last(), lines.len()), (Some(&"hist-0001"), Some(&"hist-1000"), 1000), "{text}");
+    assert_eq!(r["complete"], true, "nothing is missing: {} lines, from hist-0001", lines.len());
+}
+
+#[test]
+fn a_read_missing_history_says_so_when_the_program_prints_no_newlines() {
+    // Main-screen programs that scroll with CSI S fill the history without a
+    // single newline: the history still drops its oldest rows at its limit.
+    let s = Session::new();
+    let t = run(
+        &s,
+        &[
+            "awk",
+            "BEGIN { for (i = 1; i <= 20000; i++) printf \"\\033[999;1H\\033[Srow-%05d\", i; system(\"sleep 100\") }",
+        ],
+    );
+    wait_text(&s, &t, "row-20000");
+    let r = s.json(&["read", &t, "--lines", "30000"]);
+    let text = r["text"].as_str().unwrap();
+    assert!(!text.starts_with("row-00001"), "older rows were dropped");
+    assert_eq!(r["complete"], false, "and the read says so ({} lines)", text.lines().count());
+}
+
+#[test]
 fn read_prints_plain_text_even_when_piped() {
     let s = Session::new();
     let t = run(&s, &["sh", "-c", "echo 'say \"hi\"'; echo second; sleep 100"]);

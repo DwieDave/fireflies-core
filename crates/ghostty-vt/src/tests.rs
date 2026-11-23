@@ -222,3 +222,74 @@ fn grapheme_clustering_is_on_like_ghostty() {
     t.write(b"\x1bc");
     assert!(t.dec_mode(2027), "a reset keeps it on");
 }
+
+#[test]
+fn the_history_knows_when_it_dropped_rows_and_an_erase_starts_it_over() {
+    let lines = |n: usize| (0..n).map(|i| format!("line {i}\r\n")).collect::<String>().into_bytes();
+    let mut t = Terminal::new(40, 10, 64 * 1024);
+    assert_eq!(t.history_dropped(), Some(false), "a new screen has all it printed");
+    t.write(&lines(100));
+    assert_eq!(t.history_dropped(), Some(false), "well under the limit");
+    t.write(&lines(20_000));
+    assert_eq!(t.history_dropped(), Some(true), "past the limit: the oldest rows are gone");
+
+    t.write(b"\x1b[H\x1b[2J\x1b[3J");
+    t.write(&lines(100));
+    assert_eq!(t.history_dropped(), Some(false), "`clear` erased the history on purpose");
+
+    t.write(&lines(20_000));
+    t.write(b"\x1b[3");
+    t.write(b"Jafter\r\n");
+    assert_eq!(t.history_dropped(), Some(false), "an erase split across writes");
+
+    t.write(&lines(20_000));
+    t.write(b"\x1b[?1049h\x1b[3J\x1b[?1049l");
+    assert_eq!(t.history_dropped(), Some(true), "CSI 3 J on the alternate screen leaves the primary's history");
+    t.write(b"\x1bc");
+    assert_eq!(t.history_dropped(), Some(false), "a full reset");
+
+    // Rows that scroll without a newline fill the history all the same.
+    let mut scroller = Terminal::new(40, 10, 64 * 1024);
+    for i in 0..20_000 {
+        scroller.write(format!("\x1b[10;1H\x1b[Srow {i}").as_bytes());
+    }
+    assert_eq!(scroller.history_dropped(), Some(true));
+}
+
+#[test]
+fn a_restored_screen_does_not_know_its_past_until_it_drops_or_erases() {
+    let mut t = Terminal::new(40, 10, 64 * 1024);
+    t.write(b"hello\r\n");
+    let mut restored = Terminal::restore(&t.snapshot().unwrap(), 64 * 1024).unwrap();
+    assert_eq!(restored.history_dropped(), None);
+    restored.write(b"\x1b[3J");
+    assert_eq!(restored.history_dropped(), Some(false));
+    let mut restored = Terminal::restore(&t.snapshot().unwrap(), 64 * 1024).unwrap();
+    for i in 0..20_000 {
+        restored.write(format!("line {i}\r\n").as_bytes());
+    }
+    assert_eq!(restored.history_dropped(), Some(true));
+}
+
+#[test]
+fn after_a_reflow_the_history_says_dropped_exactly_when_its_first_line_is_gone() {
+    let long = "x".repeat(190);
+    let line = |i: usize| format!("{long}{i:05}\r\n");
+    let mut t = Terminal::new(200, 10, 256 * 1024);
+    let mut n = 0;
+    while t.history_dropped() == Some(false) {
+        t.write(line(n).as_bytes());
+        n += 1;
+    }
+    let mut t = Terminal::new(200, 10, 256 * 1024);
+    for i in 0..n - 20 {
+        t.write(line(i).as_bytes());
+    }
+    t.resize(20, 10);
+    for i in 0..40 {
+        let first = t.plain_text().lines().next().unwrap_or_default().to_string();
+        assert_eq!(t.history_dropped(), Some(!first.ends_with("x00000")), "after {i} more lines: {first}");
+        t.write(line(n + i).as_bytes());
+    }
+    assert_eq!(t.history_dropped(), Some(true), "lines ten rows high fill it sooner");
+}

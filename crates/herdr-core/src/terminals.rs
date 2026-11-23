@@ -102,6 +102,10 @@ pub struct Terminal {
     /// were dropped, so a read reaching back that far is not complete.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub printed: u64,
+    /// Its history dropped rows at its size limit (since it was last erased),
+    /// as its screen saw it. None: not known (an older core's terminal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_dropped: Option<bool>,
     /// It used the full screen, whose history the app keeps to itself: once
     /// it has exited, nobody can scroll it back.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -295,6 +299,7 @@ impl Registry {
                 told_parent: false,
                 scope: None,
                 printed: 0,
+                history_dropped: None,
                 full_screen: false,
                 win32_input: false,
                 seen_ms: None,
@@ -413,6 +418,7 @@ const PRIVATE: &[&str] = &[
     "scope",
     "holder",
     "printed",
+    "history_dropped",
     "full_screen",
     "win32_input",
     "afar",

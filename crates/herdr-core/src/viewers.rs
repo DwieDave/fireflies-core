@@ -134,6 +134,7 @@ impl Core {
         let reports = screen.take_status_reports();
         let title = screen.take_title_changed().then(|| screen.title());
         let full_screen = screen.alt_screen();
+        let dropped = screen.history_dropped();
         // Before any repaint below, so it carries the mode this output just set.
         if let Some(on) = win32_input
             && let Some(t) = st.reg.terminals.get_mut(&id).filter(|t| t.win32_input != on)
@@ -176,8 +177,9 @@ impl Core {
                 });
             }
         }
-        if full_screen && let Some(t) = st.reg.terminals.get_mut(&id) {
-            t.full_screen = true;
+        if let Some(t) = st.reg.terminals.get_mut(&id) {
+            t.full_screen |= full_screen;
+            t.history_dropped = dropped.or(t.history_dropped);
         }
         if !reports.is_empty() {
             self.report_status(st, id, &reports);
@@ -337,7 +339,9 @@ impl Core {
         if (rec.cols, rec.rows) == (cols, rows) || cols == 0 || rows == 0 {
             return;
         }
-        st.screens.get_mut(&id).expect("live screen").resize(cols, rows);
+        let screen = st.screens.get_mut(&id).expect("live screen");
+        screen.resize(cols, rows);
+        rec.history_dropped = screen.history_dropped().or(rec.history_dropped);
         rec.cols = cols;
         rec.rows = rows;
         if let Some(link) = st.link(id) {

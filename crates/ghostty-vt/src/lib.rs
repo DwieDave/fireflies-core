@@ -9,6 +9,7 @@ mod ffi {
     pub type Terminal = *mut c_void;
     pub type Formatter = *mut c_void;
     pub type Decoder = *mut c_void;
+    pub type TrackedRef = *mut c_void;
     pub type KeyEncoder = *mut c_void;
     pub type KeyEvent = *mut c_void;
     pub type MouseEncoder = *mut c_void;
@@ -60,6 +61,7 @@ mod ffi {
     pub const FORMAT_PLAIN: i32 = 0;
     pub const FORMAT_VT: i32 = 1;
     pub const POINT_ACTIVE: i32 = 0;
+    pub const POINT_SCREEN: i32 = 2;
     pub const POINT_HISTORY: i32 = 3;
 
     #[repr(C)]
@@ -205,6 +207,9 @@ mod ffi {
         pub fn ghostty_color_scheme_report_encode(scheme: i32, buf: *mut u8, cap: usize, len: *mut usize) -> i32;
         pub fn ghostty_terminal_resize(t: Terminal, cols: u16, rows: u16, cw: u32, ch: u32) -> i32;
         pub fn ghostty_terminal_grid_ref(t: Terminal, point: Point, out: *mut GridRef) -> i32;
+        pub fn ghostty_terminal_grid_ref_track(t: Terminal, point: Point, out: *mut TrackedRef) -> i32;
+        pub fn ghostty_tracked_grid_ref_has_value(r: TrackedRef) -> bool;
+        pub fn ghostty_tracked_grid_ref_free(r: TrackedRef);
         pub fn ghostty_formatter_terminal_new(
             alloc: *const c_void,
             out: *mut Formatter,
@@ -310,7 +315,24 @@ struct Hooks {
 pub struct Terminal {
     raw: ffi::Terminal,
     hooks: Box<Hooks>,
+    history: History,
 }
+
+/// Whether the history lost rows to its size limit. libghostty marks a
+/// tracked reference when the page holding it is pruned, so one on the
+/// oldest row tells; erasing the history on purpose (`clear`: CSI 3 J, or a
+/// reset) starts it over, with nothing missing.
+struct History {
+    /// The primary screen's oldest row; null until the primary screen is active.
+    oldest: ffi::TrackedRef,
+    /// None: restored from a snapshot, whose past is not known.
+    dropped: Option<bool>,
+    /// The last bytes written, for an erase split across writes.
+    tail: Vec<u8>,
+}
+
+/// What erases the history: ED 3 (scrollback) and RIS (full reset).
+const ERASES: [&[u8]; 2] = [b"\x1b[3J", b"\x1bc"];
 
 // The handle is only touched through `&mut self` / `&self`; libghostty keeps no thread state.
 unsafe impl Send for Terminal {}
@@ -391,7 +413,9 @@ impl Terminal {
         let mut raw = ptr::null_mut();
         let rc = unsafe { ffi::ghostty_terminal_new(ptr::null(), &mut raw, cols.max(1), rows.max(1)) };
         assert_eq!(rc, ffi::SUCCESS, "ghostty_terminal_new failed");
-        Terminal::wrap(raw, scrollback_bytes)
+        let mut term = Terminal::wrap(raw, scrollback_bytes);
+        term.history.dropped = Some(false);
+        term
     }
 
     fn wrap(raw: ffi::Terminal, scrollback_bytes: usize) -> Terminal {
@@ -403,7 +427,8 @@ impl Terminal {
             cell: DEFAULT_CELL,
             dark: true,
         });
-        let term = Terminal { raw, hooks };
+        let history = History { oldest: ptr::null_mut(), dropped: None, tail: Vec::new() };
+        let term = Terminal { raw, hooks, history };
         let ud: *const Hooks = &*term.hooks;
         let continuation = CONTINUATION_MAX_BYTES;
         unsafe {
@@ -424,11 +449,79 @@ impl Terminal {
         }
         let mut term = term;
         term.set_display(Some(DEFAULT_FG), Some(DEFAULT_BG), Some(DEFAULT_FG), None);
+        term.watch_history();
         term
     }
 
-    pub fn write(&mut self, bytes: &[u8]) {
+    pub fn write(&mut self, mut bytes: &[u8]) {
+        // Up to each erase, then the rest: rows dropped after an erase count.
+        while let Some(end) = self.erase_end(bytes) {
+            self.write_watched(&bytes[..end]);
+            // CSI 3 J on the alternate screen erases that screen's (empty) history.
+            if !self.alt_screen() {
+                self.history.dropped = Some(false);
+                self.unwatch_history();
+            }
+            self.watch_history();
+            bytes = &bytes[end..];
+        }
+        self.write_watched(bytes);
+    }
+
+    fn write_watched(&mut self, bytes: &[u8]) {
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) }
+        self.remember_tail(bytes);
+        self.watch_history();
+    }
+
+    /// Where the first erase in `bytes` ends, counting one begun in the last write.
+    fn erase_end(&self, bytes: &[u8]) -> Option<usize> {
+        let tail = &self.history.tail;
+        let at = |i: usize, back: usize| -> Option<u8> {
+            (i + tail.len()).checked_sub(back).map(|j| if j < tail.len() { tail[j] } else { bytes[j - tail.len()] })
+        };
+        (0..bytes.len())
+            .find(|&i| ERASES.iter().any(|e| e.iter().rev().enumerate().all(|(back, b)| at(i, back) == Some(*b))))
+            .map(|i| i + 1)
+    }
+
+    fn remember_tail(&mut self, bytes: &[u8]) {
+        let keep = ERASES.iter().map(|e| e.len() - 1).max().unwrap_or(0);
+        let tail = &mut self.history.tail;
+        tail.extend_from_slice(&bytes[bytes.len().saturating_sub(keep)..]);
+        tail.drain(..tail.len().saturating_sub(keep));
+    }
+
+    /// Notes a pruned oldest row, then watches the oldest row there is now.
+    fn watch_history(&mut self) {
+        let h = &mut self.history;
+        if !h.oldest.is_null() && !unsafe { ffi::ghostty_tracked_grid_ref_has_value(h.oldest) } {
+            h.dropped = Some(true);
+            self.unwatch_history();
+        }
+        // A reference belongs to the screen active when it is made: the primary's.
+        if self.history.oldest.is_null() && !self.alt_screen() {
+            let point =
+                ffi::Point { tag: ffi::POINT_SCREEN, value: ffi::PointValue { coord: ffi::Coord { x: 0, y: 0 } } };
+            let mut oldest = ptr::null_mut();
+            if unsafe { ffi::ghostty_terminal_grid_ref_track(self.raw, point, &mut oldest) } == ffi::SUCCESS {
+                self.history.oldest = oldest;
+            }
+        }
+    }
+
+    fn unwatch_history(&mut self) {
+        let oldest = std::mem::replace(&mut self.history.oldest, ptr::null_mut());
+        if !oldest.is_null() {
+            unsafe { ffi::ghostty_tracked_grid_ref_free(oldest) }
+        }
+    }
+
+    /// Whether the history dropped rows at its size limit since it began or was
+    /// last erased. None for a screen restored from a snapshot, until it is
+    /// erased or drops rows.
+    pub fn history_dropped(&self) -> Option<bool> {
+        self.history.dropped
     }
 
     /// Bytes that reconstruct the unfinished parser state; unavailable past the tracking limit.
@@ -442,6 +535,14 @@ impl Terminal {
         let rc = unsafe {
             ffi::ghostty_terminal_vt_write_until_ground(self.raw, bytes.as_ptr(), bytes.len(), &mut consumed)
         };
+        let written = if rc == ffi::SUCCESS { consumed } else { bytes.len() };
+        // Rare (a viewer recovering): any erase here just counts as nothing dropped.
+        if self.erase_end(&bytes[..written]).is_some() && !self.alt_screen() {
+            self.history.dropped = Some(false);
+            self.unwatch_history();
+        }
+        self.remember_tail(&bytes[..written]);
+        self.watch_history();
         (rc == ffi::SUCCESS).then_some(consumed)
     }
 
@@ -597,6 +698,8 @@ impl Terminal {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let (cw, ch) = self.hooks.cell;
         unsafe { ffi::ghostty_terminal_resize(self.raw, cols.max(1), rows.max(1), cw, ch) };
+        // Reflowing to another width can prune too.
+        self.watch_history();
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -762,6 +865,7 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        self.unwatch_history();
         unsafe { ffi::ghostty_terminal_free(self.raw) }
     }
 }

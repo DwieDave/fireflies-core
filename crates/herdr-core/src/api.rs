@@ -386,9 +386,13 @@ async fn terminal_read(core: Ctx<'_>, p: ReadParams) -> Result<ReadResult, RpcEr
         let text = text.unwrap_or_default();
         let all: Vec<&str> = text.trim_end_matches('\n').lines().collect();
         let start = all.len().saturating_sub(rows + lines);
-        // Asked for more than is kept, and more was printed than is kept: some is gone.
+        // Asked for more than is kept, and the history dropped rows at its
+        // limit: some is gone. Printed lines tell only for a screen whose past
+        // is not known (restored from an older core): output that scrolls
+        // without newlines fills the history too, and `clear` erases it.
         let kept = all.len().saturating_sub(rows).min(lines);
-        if p.lines > kept && t.printed > (kept + rows) as u64 {
+        let dropped = st.screens.get(&id).and_then(|s| s.history_dropped()).or(t.history_dropped);
+        if p.lines > kept && dropped.unwrap_or(t.printed > (kept + rows) as u64) {
             complete = false;
         }
         if p.lines > 0 && !t.is_live() && t.full_screen {
