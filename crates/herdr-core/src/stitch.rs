@@ -3,6 +3,7 @@
 
 use crate::runtime::Core;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Of the rows two screens could share, how many must match to be "the same screen".
@@ -176,12 +177,22 @@ impl Capture {
     }
 }
 
+/// What a scroll left behind: the capture (when every merge held), and what
+/// putting the view back needs (when any scrolling happened at all).
+struct Scrolled {
+    capture: Option<Capture>,
+    restore: Option<(Vec<String>, Duration, usize)>,
+}
+
 impl Core {
     /// Reads a full-screen app's history by scrolling it with the mouse wheel,
     /// then scrolls it back. Only for an app on the alternate screen that takes
     /// the wheel and isn't working, blocked or in error. `None`: read the plain
     /// screen instead, marked incomplete (any doubt ends up here).
-    pub async fn stitch(&self, id: u32, lines: usize) -> Option<(String, bool)> {
+    ///
+    /// The answer returns as soon as the pages are captured; the view is
+    /// scrolled back (and the input gate released) in the background.
+    pub async fn stitch(self: &Arc<Self>, id: u32, lines: usize) -> Option<(String, bool)> {
         // Nothing printed since a read that covers this one: answer from memory.
         let ready = |st: &crate::runtime::State| -> Result<Option<(String, bool)>, ()> {
             let t = st.reg.terminals.get(&id).filter(|t| t.is_live()).ok_or(())?;
@@ -201,7 +212,7 @@ impl Core {
         }
         // The input queue: no send, keys or note in between. A person's keys wait.
         let queue = self.lock().queues.entry(id).or_default().clone();
-        let _turn = queue.lock().await;
+        let turn = queue.lock_owned().await;
         {
             // Whatever went in while we queued (a send) may have changed that.
             let mut st = self.lock();
@@ -211,36 +222,52 @@ impl Core {
             st.gates.entry(id).or_default().set_busy(true);
             st.stitching.insert(id);
         }
-        let result = self.scroll_and_read(id, lines).await;
-        let mut st = self.lock();
-        st.stitching.remove(&id);
-        let held = st.gates.entry(id).or_default().set_busy(false);
-        if let Some(link) = st.link(id) {
-            link.input(id, &held);
-        }
-        if st.screens.contains_key(&id) {
-            let paint = crate::viewers::first_paint(&st, id, 0);
-            let recovering = st.screens[&id].continuation().is_none();
-            for v in st.viewers.get_mut(&id).into_iter().flatten() {
-                v.recovering = recovering;
-                v.conn.with(|out| {
-                    out.data(v.channel, &paint);
-                });
+        let scrolled = self.scroll_and_read(id, lines).await;
+        let answer = scrolled.capture.as_ref().map(|c| c.answer(lines));
+        let core = self.clone();
+        tokio::spawn(async move {
+            let _turn = turn; // held until the view is back
+            let restored = match &scrolled.restore {
+                Some((initial, pace, ups)) => {
+                    let mut pace = *pace;
+                    core.wheel(id, false, *ups);
+                    core.put_back(id, initial, &mut pace, *ups).await
+                }
+                None => true, // the probe paths already left the view right
+            };
+            let mut st = core.lock();
+            st.stitching.remove(&id);
+            let held = st.gates.entry(id).or_default().set_busy(false);
+            if let Some(link) = st.link(id) {
+                link.input(id, &held);
             }
-        }
-        let capture = result?;
-        let answer = capture.answer(lines);
-        if held.is_empty() {
-            let seq = st.output_seq.get(&id).copied().unwrap_or(0);
-            st.stitched.insert(id, (seq, capture));
-        }
-        Some(answer)
+            if st.screens.contains_key(&id) {
+                let paint = crate::viewers::first_paint(&st, id, 0);
+                let recovering = st.screens[&id].continuation().is_none();
+                for v in st.viewers.get_mut(&id).into_iter().flatten() {
+                    v.recovering = recovering;
+                    v.conn.with(|out| {
+                        out.data(v.channel, &paint);
+                    });
+                }
+            }
+            if let Some(capture) = scrolled.capture {
+                // The cache only once the view is back: the restore itself
+                // prints, so the sequence number is only stable after it.
+                if restored && held.is_empty() {
+                    let seq = st.output_seq.get(&id).copied().unwrap_or(0);
+                    st.stitched.insert(id, (seq, capture));
+                }
+            }
+        });
+        answer
     }
 
-    async fn scroll_and_read(&self, id: u32, lines: usize) -> Option<Capture> {
+    async fn scroll_and_read(&self, id: u32, lines: usize) -> Scrolled {
+        let none = || Scrolled { capture: None, restore: None };
         let deadline = Instant::now() + limit();
         let mut pace = STEP;
-        let initial = self.settled(id, deadline).await?;
+        let Some(initial) = self.settled(id, deadline).await else { return none() };
         // Already scrolled up by someone? Then we can't know where "back" is.
         // One notch: a view that close to the bottom still moves all of it,
         // so one notch up puts it back exactly. Judge the last frame of the
@@ -259,13 +286,13 @@ impl Core {
                     if self.quiet_page(id, short).await.is_some_and(|now| !similar(&now, &initial)) {
                         self.undo_probe(id).await;
                     }
-                    return None;
+                    return none();
                 }
             }
         };
         if !similar(&probe, &initial) {
             self.undo_probe(id).await;
-            return None;
+            return none();
         }
         let want = lines + initial.len();
         let (mut history, mut previous) = (initial.clone(), initial.clone());
@@ -329,9 +356,8 @@ impl Core {
                 }
             }
         }
-        self.wheel(id, false, ups);
-        let restored = self.put_back(id, &initial, &mut pace, ups).await;
-        (valid && restored).then_some(Capture { rows: history, screen: initial.len(), top })
+        let capture = valid.then(|| Capture { rows: history, screen: initial.len(), top });
+        Scrolled { capture, restore: Some((initial, pace, ups)) }
     }
 
     /// The probe moved a view someone scrolled up: one notch back, then let it draw.
