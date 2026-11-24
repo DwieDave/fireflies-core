@@ -129,8 +129,20 @@ pub fn merge_up(history: &mut Vec<String>, previous: &[String], next: &[String])
     Merge::Advanced(boundary - at)
 }
 
-/// Wheel notches per scroll step.
+/// Wheel notches in the first scroll step (while the rows one notch moves
+/// is still unknown). Later steps grow: see `step_notches`.
 const NOTCHES: usize = 3;
+/// The most notches one step may send.
+const MAX_NOTCHES: usize = 60;
+
+/// How many notches the next step sends: aim half a screen per step (the
+/// other half stays as overlap for the alignment), from the largest
+/// rows-per-notch seen so far. Overestimating rows-per-notch only shrinks
+/// the step; underestimating it could outrun the overlap, so `per_notch`
+/// is the maximum of the observed ratios, rounded up.
+fn step_notches(screen: usize, per_notch: usize) -> usize {
+    ((screen / 2).max(1) / per_notch.max(1)).clamp(NOTCHES, MAX_NOTCHES)
+}
 /// Output silent this long (and no synchronized frame open) = the redraw is done.
 const SETTLE: Duration = Duration::from_millis(10);
 /// How long one scroll step may take to show.
@@ -258,18 +270,37 @@ impl Core {
         let want = lines + initial.len();
         let (mut history, mut previous) = (initial.clone(), initial.clone());
         let (mut ups, mut top, mut valid, mut still) = (0, false, true, false);
+        let (mut notches, mut per_notch) = (NOTCHES, 0);
         'scroll: while history.len() < want {
-            self.wheel(id, true, NOTCHES);
-            ups += NOTCHES;
-            let started = Instant::now();
+            self.wheel(id, true, notches);
+            ups += notches;
+            let (sent, mut got) = (notches, 0usize);
+            // How far this batch should scroll. Unknown rows-per-notch (the
+            // first batch): only quiet ends it.
+            let expect = if per_notch == 0 { usize::MAX } else { sent * per_notch };
             loop {
-                let Some((next, step_over)) = self.next_page(id, started, &mut pace, deadline, true).await else {
+                let Some((next, step_over)) = self.next_page(id, Instant::now(), &mut pace, deadline, true).await else {
                     valid = false;
                     break 'scroll;
                 };
                 match merge_up(&mut history, &previous, &next) {
-                    Merge::Advanced(_) => {
+                    // The batch may draw in several frames: keep collecting
+                    // until it scrolled as far as it should, then send the next.
+                    Merge::Advanced(added) => {
+                        got += added;
                         (previous, still) = (next, false);
+                        if got >= expect || history.len() >= want {
+                            per_notch = per_notch.max(got.div_ceil(sent));
+                            notches = step_notches(initial.len(), per_notch);
+                            continue 'scroll;
+                        }
+                    }
+                    // Quiet for a whole pace after some movement: the batch
+                    // has fully drawn (it moved less than expected, or its
+                    // size was still unknown).
+                    Merge::Unchanged if step_over && got > 0 => {
+                        per_notch = per_notch.max(got.div_ceil(sent));
+                        notches = step_notches(initial.len(), per_notch);
                         continue 'scroll;
                     }
                     // A slow redraw looks like the top: believe it after two quiet
